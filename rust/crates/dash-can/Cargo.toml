@@ -1,0 +1,12 @@
+[package]
+name = "dash-can"
+version = "0.1.0"
+description = "CAN bus and OBD-II layer for dash (migration step 2 and 3)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

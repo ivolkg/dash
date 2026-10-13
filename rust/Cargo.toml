@@ -1,0 +1,17 @@
+# Rust workspace for the dash oxidation (see docs/OXIDIZING.md).
+# Each migration step adds a crate here; C++ consumes them through cxx.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.80"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
