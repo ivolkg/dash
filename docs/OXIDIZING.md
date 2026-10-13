@@ -236,3 +236,66 @@ interface now (`start`, `stop`, video out, input in, metadata and navigation
 events out). Options B and C sit behind the same interface, so porting later
 does not disturb the UI. Decide on C only after the rest of the migration
 has shown whether the Rust toolchain on the Pi is paying off.
+
+## Why port openauto at all (annotated 2026-10-13)
+
+Advantages: the phone is untrusted input (USB, TCP, protobuf, TLS records),
+so this is the one layer where memory safety is about hostile data and where
+`cargo-fuzz` applies. Connection lifecycle (connect, disconnect, reconnect)
+is where openauto's crashes and hangs live, and Rust ownership plus tokio
+cancellation makes teardown explicit. Boost leaves the stack. Upstream
+openauto has been unmaintained since 2018, so whoever ports it owns it in
+code they understand. Wireless becomes a first-class transport.
+
+No gain in speed (decode is GStreamer and the GPU either way), no new
+features, and no spec: a port transliterates aasdk and rediscovers every
+phone quirk aasdk handles by accident.
+
+## Wireless and reconnect (annotated 2026-10-13)
+
+Wireless is supported today through openauto's `btservice` and `App.cpp`.
+Dash contributes nothing to it and does not set up the hotspot.
+
+Flow:
+
+1. Head unit registers an RFCOMM service on channel 22, discoverable.
+2. If autoconnect is on, runs `bluetoothctl connect <last MAC>` as a
+   subprocess, once at startup, blocking.
+3. Phone connects over RFCOMM. Head unit sends its IP and port 5000, then
+   SSID, password and `wlan0` MAC from the openauto config, declaring itself
+   a static access point. `hostapd` is the user's problem and undocumented.
+4. Phone joins the Wi-Fi and opens TCP to port 5000. openauto accepts.
+5. Ping every 5 seconds. One missed pong or any channel error tears the
+   session down and returns to waiting.
+
+Why reconnect is flaky:
+
+- Nothing on the head unit re-initiates after a drop. `bluetoothctl` runs
+  once at boot. Recovery depends on the phone's retry schedule.
+- `App::start` refuses a new TCP connection while the old session object
+  still exists and does not re-arm the acceptor, so a phone retrying inside
+  the teardown window is dropped until the ping timeout finishes the old
+  session.
+- One missed ping ends the session. The 5 second timeout is fixed.
+- The Bluetooth step is a blocking subprocess with no events or backoff.
+
+What Rust gains here: the connection manager (`App`, `btservice`, `Pinger`,
+USB hub glue, about 1,500 lines) becomes one state machine (idle, Bluetooth
+handshake, awaiting TCP, session, tearing down) driven by `tokio::select!`
+over USB hotplug, TCP accept, Bluetooth events, ping timer and shutdown.
+Teardown completes before the next accept by construction. `bluer` gives
+async BlueZ events and RFCOMM listening with backoff. Ping tolerance becomes
+configurable (ping lives in aasdk's control channel, so that stays a small
+C++ change unless the session is ported). The Bluetooth handshake and TCP
+accept path are testable with a fake phone in `cargo test`. aasdk's session
+stays C++; Rust hands socket descriptors across cxx. 2 to 3 weeks,
+independent of the rest of the migration.
+
+Caveat: re-arming the acceptor, retrying `bluetoothctl` on a timer and
+loosening the pinger are each a few days in C++ on the openauto fork. If
+reconnect is the top priority, do those first, then replace them with the
+Rust connection manager when the migration reaches Android Auto.
+
+Revised migration order: the AA connection manager moves from step 10 to
+right after step 5 (core), since reconnect is the highest-priority user
+problem and the work is independent.
