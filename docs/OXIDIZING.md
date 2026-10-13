@@ -203,3 +203,36 @@ Full-system Pi emulation (QEMU `raspi3b`, or the `virt` machine with a Pi OS
 kernel) boots, but has no V3D GPU, no DRM/KMS acceleration, no USB passthrough
 worth using. It is useful for packaging checks only, not for rendering,
 Android Auto, Bluetooth or backlight. Those four stay on real hardware.
+
+## Android Auto in Rust (annotated 2026-10-13)
+
+Correction to the testing section: Android Auto needs a phone, not a Pi.
+aasdk and openauto run on desktop Linux. A phone on USB (Docker with
+`--device /dev/bus/usb`) or wireless on the same network is the AA test at
+every step, and it works on the PC.
+
+AA is not stuck in C++. It is C++ today because aasdk and openauto are the
+only mature implementations of the reverse-engineered head unit protocol.
+Known Rust work (`aa-proxy-rs`) covers the USB accessory and TCP transport
+only; it forwards bytes and does not speak the protocol. Nothing in the stack
+is impossible in Rust: `rusb` for AOA, `prost` on the `aasdk_proto` files,
+`openssl` with memory BIOs for the TLS-inside-messages handshake, `tokio`
+for channels, `gstreamer-rs` for H.264, `cpal` or `alsa` for audio.
+
+What dash touches is small: `AAHandler` (54 lines) and `OpenAutoPage`
+(~490 lines). What it depends on is large: aasdk is roughly 15k lines and
+openauto roughly 10k, with no spec other than the code.
+
+Options, least to most work:
+
+| Option | Work | Risk | Result |
+|---|---|---|---|
+| A. Keep aasdk and openauto, wrap behind a C shim | 1 to 2 weeks | Low | AA is a black box. Rust gets frames via a GStreamer appsink, sends touch and buttons in, receives media and navigation events out. |
+| B. Keep aasdk, port openauto's services to Rust | 1 to 2 months | Medium | aasdk is boost::asio, templates and shared_ptr promises. cxx handles none of that well; the shim grows into a C API over aasdk. |
+| C. Port aasdk's protocol core to Rust | 2 to 4 months | High | Whole stack is Rust. Must be re-verified against real phones and each Google update, same as aasdk today. |
+
+Recommendation: do A as step 10 of the migration and define the shim
+interface now (`start`, `stop`, video out, input in, metadata and navigation
+events out). Options B and C sit behind the same interface, so porting later
+does not disturb the UI. Decide on C only after the rest of the migration
+has shown whether the Rust toolchain on the Pi is paying off.
